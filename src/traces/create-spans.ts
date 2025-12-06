@@ -1,52 +1,52 @@
 import { Context, ROOT_CONTEXT } from '@opentelemetry/api'
 import {
-  WorkflowRun,
-  WorkflowRunJobs,
-  WorkflowRunJob,
+  WorkflowJob,
+  WorkflowJobs,
   getLatestCompletedAt
 } from '../github/index.js'
 import * as opentelemetry from '@opentelemetry/api'
-import { fail } from 'assert'
 import { calcDiffSec } from '../utils/calc-diff-sec.js'
 import * as core from '@actions/core'
+import { Workflow } from 'src/github/types.js'
 
-export const createWorkflowRunTrace = (
-  workflowRun: WorkflowRun,
-  workflowRunJobs: WorkflowRunJobs
+export const createWorkflowTrace = (
+  workflow: Workflow,
+  workflowJobs: WorkflowJobs
 ): Context => {
-  if (!workflowRun.name) fail()
   const span = createSpan(
     ROOT_CONTEXT,
-    workflowRun.name,
-    workflowRun.created_at,
-    getLatestCompletedAt(workflowRunJobs),
-    workflowRun.conclusion,
-    { ...buildWorkflowRunAttributes(workflowRun) }
+    workflow.name,
+    workflow.created_at,
+    getLatestCompletedAt(workflowJobs),
+    workflow.conclusion || '', // '' is converted to UNSET status. we should not use ''.
+    { ...buildWorkflowAttributes(workflow) }
   )
 
   return opentelemetry.trace.setSpan(ROOT_CONTEXT, span)
 }
 
-export const createWorkflowRunJobSpan = (
+export const createWorkflowJobSpan = (
   ctx: Context,
-  job: WorkflowRunJob
+  job: WorkflowJob
 ): Context => {
-  if (!job.completed_at || job.steps === undefined) fail()
+  if (!job.completed_at) {
+    throw new Error(
+      `Job completed_at is required for span creation: ${job.name} (id: ${job.id})`
+    )
+  }
+
   const spanWithWaiting = createSpan(
     ctx,
     `${job.name} with time of waiting runner`,
     job.created_at,
     job.completed_at,
     job.conclusion,
-    { ...buildWorkflowRunJobAttributes(job) }
+    { ...buildWorkflowJobAttributes(job) }
   )
   const ctxWithWaiting = opentelemetry.trace.setSpan(ctx, spanWithWaiting)
 
   const waitingSpanName = `waiting runner for ${job.name}`
-  const jobQueuedDuration = calcDiffSec(
-    new Date(job.created_at),
-    new Date(job.started_at)
-  )
+  const jobQueuedDuration = calcDiffSec(job.created_at, job.started_at)
   if (jobQueuedDuration >= 0) {
     createSpan(
       ctxWithWaiting,
@@ -54,7 +54,7 @@ export const createWorkflowRunJobSpan = (
       job.created_at,
       job.started_at,
       'success', // waiting runner is not a error.
-      { ...buildWorkflowRunJobAttributes(job) }
+      { ...buildWorkflowJobAttributes(job) }
     )
   } else {
     core.notice(
@@ -68,7 +68,7 @@ export const createWorkflowRunJobSpan = (
     job.started_at,
     job.completed_at,
     job.conclusion,
-    { ...buildWorkflowRunJobAttributes(job) }
+    { ...buildWorkflowJobAttributes(job) }
   )
 
   return opentelemetry.trace.setSpan(ctxWithWaiting, jobSpan)
@@ -76,11 +76,15 @@ export const createWorkflowRunJobSpan = (
 
 export const createWorkflowRunStepSpan = (
   ctx: Context,
-  job: WorkflowRunJob
+  job: WorkflowJob
 ): void => {
-  if (job.steps === undefined) fail()
-  job.steps.map(step => {
-    if (step.started_at == null || step.completed_at == null) fail()
+  job.steps.forEach(step => {
+    if (step.started_at == null || step.completed_at == null) {
+      console.warn(
+        `Step ${step.name} in job ${job.name} has null timestamps, skipping span creation`
+      )
+      return
+    }
     createSpan(
       ctx,
       step.name,
@@ -95,17 +99,16 @@ export const createWorkflowRunStepSpan = (
 const createSpan = (
   ctx: Context,
   name: string,
-  startAt: string,
-  endAt: string,
-  conclusion: string | null,
+  startAt: Date,
+  endAt: Date,
+  // TODO: use user defined type instead of string
+  conclusion: string,
   attributes: opentelemetry.Attributes
 ): opentelemetry.Span => {
   const tracer = opentelemetry.trace.getTracer('github-actions-opentelemetry')
-  const startTime = new Date(startAt)
-  const endTime = new Date(endAt)
-  const span = tracer.startSpan(name, { startTime, attributes }, ctx)
+  const span = tracer.startSpan(name, { startTime: startAt, attributes }, ctx)
   span.setStatus(getSpanStatusFromConclusion(conclusion))
-  span.end(endTime)
+  span.end(endAt)
   return span
 }
 
@@ -114,8 +117,8 @@ const createSpan = (
 // The type of `conclusion` for a job is defined, but for step and workflow, it is just a string.
 // At the very least, we know that `conclusion` for step, job, and workflow can take the values `success` and `failure`,
 // so I have summarized the definitions accordingly.
-const getSpanStatusFromConclusion = (
-  status: string | null
+export const getSpanStatusFromConclusion = (
+  status: string
 ): opentelemetry.SpanStatus => {
   switch (status) {
     case 'success':
@@ -128,8 +131,9 @@ const getSpanStatusFromConclusion = (
   }
 }
 
-const buildWorkflowRunAttributes = (
-  workflowRun: WorkflowRun
+// TODO: add tests for these functions
+const buildWorkflowAttributes = (
+  workflowRun: Workflow
 ): opentelemetry.Attributes => ({
   repository: workflowRun.repository.full_name,
   run_id: workflowRun.id,
@@ -137,10 +141,12 @@ const buildWorkflowRunAttributes = (
   url: workflowRun.html_url
 })
 
-const buildWorkflowRunJobAttributes = (
-  job: WorkflowRunJob
+// TODO: add tests for these functions
+const buildWorkflowJobAttributes = (
+  job: WorkflowJob
 ): opentelemetry.Attributes => ({
-  'job.conclusion': job.conclusion || undefined,
+  'job.id': job.id,
+  'job.conclusion': job.conclusion,
   'runner.name': job.runner_name || undefined,
   'runner.group': job.runner_group_name || undefined
 })

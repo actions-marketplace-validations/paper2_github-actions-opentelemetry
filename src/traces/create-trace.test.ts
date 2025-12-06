@@ -11,23 +11,23 @@ import { fail } from 'assert'
 import settings from '../settings.js'
 import { SpanStatusCode } from '@opentelemetry/api'
 
-const workflowRunResults = {
-  workflowRun: {
-    created_at: '2024-09-01T00:00:00Z',
-    status: 'completed',
+const workflowRunResults: WorkflowResults = {
+  workflow: {
+    created_at: new Date('2024-09-01T00:00:00Z'),
     id: 10000000000,
     name: 'Test Run',
-    run_number: 14,
+    run_attempt: 14,
     repository: {
       full_name: 'paper2/github-actions-opentelemetry'
     },
-    conclusion: 'failure'
+    conclusion: 'failure',
+    html_url: 'http://example.com/workflow_run'
   },
-  workflowRunJobs: [
+  workflowJobs: [
     {
-      created_at: '2024-09-01T00:02:00Z',
-      started_at: '2024-09-01T00:05:00Z',
-      completed_at: '2024-09-01T00:10:00Z',
+      created_at: new Date('2024-09-01T00:02:00Z'),
+      started_at: new Date('2024-09-01T00:05:00Z'),
+      completed_at: new Date('2024-09-01T00:10:00Z'),
       id: 30000000000,
       name: 'job1',
       run_id: 10000000000,
@@ -37,28 +37,30 @@ const workflowRunResults = {
       steps: [
         {
           name: 'step1_1',
-          started_at: '2024-09-01T00:05:10Z',
-          completed_at: '2024-09-01T00:05:20Z',
+          started_at: new Date('2024-09-01T00:05:10Z'),
+          completed_at: new Date('2024-09-01T00:05:20Z'),
           conclusion: 'success'
         },
         {
           name: 'step1_2',
-          started_at: '2024-09-01T00:05:30Z',
-          completed_at: '2024-09-01T00:05:35',
+          started_at: new Date('2024-09-01T00:05:30Z'),
+          completed_at: new Date('2024-09-01T00:05:35Z'),
           conclusion: 'success'
         },
         {
           name: 'step1_3',
-          started_at: '2024-09-01T00:05:40',
-          completed_at: '2024-09-01T00:05:50',
+          started_at: new Date('2024-09-01T00:05:40Z'),
+          completed_at: new Date('2024-09-01T00:05:50Z'),
           conclusion: 'success'
         }
-      ]
+      ],
+      runner_name: null,
+      runner_group_name: null
     },
     {
-      created_at: '2024-09-01T00:12:00Z',
-      started_at: '2024-09-01T00:15:00Z',
-      completed_at: '2024-09-01T00:20:00Z',
+      created_at: new Date('2024-09-01T00:12:00Z'),
+      started_at: new Date('2024-09-01T00:15:00Z'),
+      completed_at: new Date('2024-09-01T00:20:00Z'),
       id: 30000000001,
       name: 'job2',
       run_id: 10000000000,
@@ -68,27 +70,30 @@ const workflowRunResults = {
       steps: [
         {
           name: 'step2_1',
-          started_at: '2024-09-01T00:15:10Z',
-          completed_at: '2024-09-01T00:15:20Z',
+          started_at: new Date('2024-09-01T00:15:10Z'),
+          completed_at: new Date('2024-09-01T00:15:20Z'),
           conclusion: 'success'
         },
         {
           name: 'step2_2',
-          started_at: '2024-09-01T00:15:30Z',
-          completed_at: '2024-09-01T00:15:35',
+          started_at: new Date('2024-09-01T00:15:30Z'),
+          completed_at: new Date('2024-09-01T00:15:35Z'),
           conclusion: 'success'
         },
         {
           name: 'step2_3',
-          started_at: '2024-09-01T00:15:40',
-          completed_at: '2024-09-01T00:15:50',
+          started_at: new Date('2024-09-01T00:15:40Z'),
+          completed_at: new Date('2024-09-01T00:15:50Z'),
           conclusion: 'failure'
         }
-      ]
+      ],
+      runner_name: null,
+      runner_group_name: null
     }
   ]
-} as WorkflowResults
-const { workflowRun, workflowRunJobs } = workflowRunResults
+}
+const { workflow: workflowRun, workflowJobs: workflowRunJobs } =
+  workflowRunResults
 
 describe('should export expected spans', () => {
   const exporter = new InMemorySpanExporter()
@@ -103,7 +108,9 @@ describe('should export expected spans', () => {
   })
 
   test('should verify startTime and endTime', async () => {
-    await createTrace(workflowRunResults)
+    const traceId = await createTrace(workflowRunResults)
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/) // OpenTelemetry trace ID format
+    expect(typeof traceId).toBe('string')
     await forceFlush()
     const spans = exporter.getFinishedSpans().map(span => ({
       name: span.name,
@@ -174,11 +181,12 @@ describe('should export expected spans', () => {
   })
 
   test('should export only one root span', async () => {
-    await createTrace(workflowRunResults)
+    const traceId = await createTrace(workflowRunResults)
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/) // OpenTelemetry trace ID format
     await forceFlush()
 
     const spans = exporter.getFinishedSpans().map(span => ({
-      parentSpanId: span.parentSpanId
+      parentSpanId: span.parentSpanContext?.spanId
     }))
 
     const rootSpanCount = spans.filter(v => {
@@ -189,7 +197,8 @@ describe('should export expected spans', () => {
   })
 
   test('should verify resource attributes', async () => {
-    await createTrace(workflowRunResults)
+    const traceId = await createTrace(workflowRunResults)
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/) // OpenTelemetry trace ID format
     await forceFlush()
 
     const spans = exporter.getFinishedSpans().map(span => ({
@@ -197,23 +206,28 @@ describe('should export expected spans', () => {
     }))
 
     spans.map(span => {
+      // NOTE: Resource attributes are defined in vitest.config.ts
       expect(span.resourceAttributes).toMatchObject({
-        'service.name': 'github-actions-opentelemetry'
+        'service.name': 'github-actions-opentelemetry',
+        'test.attribute': 'example',
+        'test.attribute2': 'example2'
       })
     })
   })
 
   test('should not export when disable FeatureFlagTrace', async () => {
     settings.FeatureFlagTrace = false
-    await createTrace(workflowRunResults)
+    const traceId = await createTrace(workflowRunResults)
     await forceFlush()
 
+    expect(traceId).toBe('')
     expect(exporter.getFinishedSpans()).toHaveLength(0)
     settings.FeatureFlagTrace = true
   })
 
   test('should verify span status', async () => {
-    await createTrace(workflowRunResults)
+    const traceId = await createTrace(workflowRunResults)
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/) // OpenTelemetry trace ID format
     await forceFlush()
 
     const spans = exporter.getFinishedSpans()
@@ -240,7 +254,8 @@ describe('should export expected spans', () => {
   })
 
   test('should verify span hierarchy', async () => {
-    await createTrace(workflowRunResults)
+    const traceId = await createTrace(workflowRunResults)
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/) // OpenTelemetry trace ID format
     await forceFlush()
 
     const spans = exporter.getFinishedSpans()
@@ -284,10 +299,81 @@ describe('should export expected spans', () => {
 
     expect(spans).toHaveLength(assertionCount)
   })
+
+  test('should capture and return valid trace ID as string', async () => {
+    const traceId = await createTrace(workflowRunResults)
+    await forceFlush()
+
+    // Verify trace ID is properly extracted as string
+    expect(typeof traceId).toBe('string')
+    expect(traceId).toMatch(/^[0-9a-f]{32}$/) // OpenTelemetry trace ID format
+
+    // Verify the trace ID matches the actual span trace ID
+    const spans = exporter.getFinishedSpans()
+    const rootSpan = findSpanByName(spans, workflowRun.name)
+    expect(traceId).toBe(rootSpan.spanContext().traceId)
+  })
+
+  test('should return empty string when trace feature is disabled', async () => {
+    settings.FeatureFlagTrace = false
+    const traceId = await createTrace(workflowRunResults)
+    await forceFlush()
+
+    expect(traceId).toBe('')
+    expect(exporter.getFinishedSpans()).toHaveLength(0)
+
+    // Reset for other tests
+    settings.FeatureFlagTrace = true
+  })
+
+  test('should return empty string when trace creation fails with invalid data', async () => {
+    // Create invalid workflow results that will cause an error
+    const invalidResults = {
+      workflow: null,
+      workflowJobs: []
+    } as unknown as WorkflowResults
+
+    const traceId = await createTrace(invalidResults)
+    expect(traceId).toBe('')
+  })
+
+  test('should handle missing trace context gracefully', async () => {
+    // This test verifies behavior when OpenTelemetry context is not properly set up
+    // We'll temporarily disable and re-enable to simulate this scenario
+    opentelemetryAllDisable()
+
+    const traceId = await createTrace(workflowRunResults)
+    // When OpenTelemetry is disabled, it returns a trace ID of all zeros
+    expect(traceId).toBe('00000000000000000000000000000000')
+    expect(typeof traceId).toBe('string')
+  })
+
+  test('should handle errors in trace creation and return empty string', async () => {
+    // Create invalid workflow results that will cause an error in createWorkflowTrace
+    const invalidResults = {
+      workflow: {
+        created_at: 'invalid-date', // This will cause an error
+        id: 10000000000,
+        name: 'Test Run',
+        run_attempt: 14,
+        repository: {
+          full_name: 'paper2/github-actions-opentelemetry'
+        },
+        conclusion: 'failure',
+        html_url: 'http://example.com/workflow_run'
+      },
+      workflowJobs: []
+    } as unknown as WorkflowResults
+
+    const traceId = await createTrace(invalidResults)
+
+    // Should return empty string when error occurs
+    expect(traceId).toBe('')
+  })
 })
 
-const toEpochSec = (date: string): number => {
-  return Math.floor(new Date(date).getTime() / 1000)
+const toEpochSec = (date: Date): number => {
+  return Math.floor(date.getTime() / 1000)
 }
 
 const findSpanByName = (spans: ReadableSpan[], name: string): ReadableSpan => {
@@ -300,6 +386,6 @@ const assertParentChildRelationship = (
   parent: ReadableSpan,
   child: ReadableSpan
 ): void => {
-  expect(child.parentSpanId).toBe(parent.spanContext().spanId)
+  expect(child.parentSpanContext?.spanId).toBe(parent.spanContext().spanId)
   expect(child.spanContext().traceId).toBe(parent.spanContext().traceId)
 }

@@ -33,6 +33,13 @@ Each metric has associated attributes.
 
 ![Attributes Sample](./img/trace-attributes.png)
 
+Traces include several attributes to help identify and analyze workflow
+execution:
+
+- **Workflow-level attributes**: `run_id`, `run_attempt`, `repository`, `url`
+- **Job-level attributes**: `job.id`, `job.conclusion`, `runner.name`,
+  `runner.group`
+
 You can find a trace by the `run_id` attribute attached to the root span.
 `run_id` is visible in the workflow results URL. For example, if the URL is:
 
@@ -42,7 +49,28 @@ https://github.com/paper2/github-actions-opentelemetry/actions/runs/12246387114
 
 Then the `run_id` is `12246387114`.
 
+### Adding Custom Resource Attributes
+
+You can add custom attributes to all traces and metrics using the
+`OTEL_RESOURCE_ATTRIBUTES` environment variable. This is useful for adding
+context like environment, or team information:
+
+```yaml
+env:
+  OTEL_RESOURCE_ATTRIBUTES: 'environment=production,team=backend'
+```
+
+These custom attributes will be included as resource attributes in all exported
+telemetry data.
+
 ![search-trace-run-id](./img/search-trace-run-id.png)
+
+## Trace ID Summary
+
+After the action completes, you'll see the workflow trace ID displayed in the
+GitHub Actions summary for easy access:
+
+![Trace ID Summary](./img/trace-id-summary.png)
 
 ## How it works
 
@@ -73,9 +101,11 @@ sequenceDiagram
    [workflow_run](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run)
    because this action collects telemetry of completed workflows.
 
-### GitHub Actions Example
+### GitHub Actions Examples
 
-Here's an example of how to set up this action in a GitHub Actions workflow:
+#### Option 1: Monitor Other Workflows
+
+Monitor completed workflows triggered by `workflow_run` events:
 
 ```yaml
 name: Send Telemetry after Other Workflow
@@ -114,8 +144,60 @@ jobs:
           # Basic Authentication: Authorization=Basic <base64-encoded value of userid:password>
           OTEL_EXPORTER_OTLP_HEADERS:
             api-key=${ secrets.API_KEY },other-config-value=value
+          OTEL_RESOURCE_ATTRIBUTES: 'environment=ci,team=backend'
         with:
           # Required for collecting workflow data
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+#### Option 2: Monitor Current Workflow (Experimental)
+
+Monitor the current workflow by running this action as the last step:
+
+```yaml
+name: CI with Built-in Telemetry
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run build
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm test
+
+  # Telemetry job runs after all other jobs complete
+  telemetry:
+    runs-on: ubuntu-latest
+    needs: [build, test] # Wait for other jobs to complete
+    if: always() # Run even if other jobs fail
+    steps:
+      - name: Send Telemetry
+        uses: paper2/github-actions-opentelemetry@main
+        env:
+          OTEL_SERVICE_NAME: github-actions-opentelemetry
+          OTEL_EXPORTER_OTLP_ENDPOINT: https://collector-example.com
+          # Additional OTLP headers. Useful for OTLP authentication.
+          # e.g.
+          # New Relic: api-key=YOUR_NEWRELIC_API_KEY
+          # Google Cloud Run: Authorization=Bearer <value of $(gcloud auth print-identity-token)>
+          # Basic Authentication: Authorization=Basic <base64-encoded value of userid:password>
+          OTEL_EXPORTER_OTLP_HEADERS:
+            api-key=${ secrets.API_KEY },other-config-value=value
+          OTEL_RESOURCE_ATTRIBUTES: 'environment=ci,team=backend'
+        with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
@@ -123,16 +205,17 @@ jobs:
 
 To configure the action, you need to set the following environment variables:
 
-| Environment Variable                  | Required | Default Value | Description                                                                                      |
-| ------------------------------------- | -------- | ------------- | ------------------------------------------------------------------------------------------------ |
-| `OTEL_SERVICE_NAME`                   | Yes      | -             | Service name.                                                                                    |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`         | Yes      | -             | OTLP Endpoint for Traces and Metrics. e.g., <https://collector-example.com>                      |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | No       | -             | OTLP Endpoint for Metrics instead of OTEL_EXPORTER_OTLP_ENDPOINT.                                |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | No       | -             | OTLP Endpoint for Traces instead of OTEL_EXPORTER_OTLP_ENDPOINT.                                 |
-| `OTEL_EXPORTER_OTLP_HEADERS`          | No       | -             | Additional OTLP headers. Useful for authentication. e.g., "api-key=key,other-config-value=value" |
-| `FEATURE_TRACE`                       | No       | `true`        | Enable trace feature.                                                                            |
-| `FEATURE_METRICS`                     | No       | `true`        | Enable Metrics feature.                                                                          |
-| `OTEL_LOG_LEVEL`                      | No       | `info`        | Log level.                                                                                       |
+| Environment Variable                  | Required | Default Value | Description                                                                                        |
+| ------------------------------------- | -------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| `OTEL_SERVICE_NAME`                   | Yes      | -             | Service name.                                                                                      |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`         | Yes      | -             | OTLP Endpoint for Traces and Metrics. e.g., <https://collector-example.com>                        |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | No       | -             | OTLP Endpoint for Metrics instead of OTEL_EXPORTER_OTLP_ENDPOINT.                                  |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`  | No       | -             | OTLP Endpoint for Traces instead of OTEL_EXPORTER_OTLP_ENDPOINT.                                   |
+| `OTEL_EXPORTER_OTLP_HEADERS`          | No       | -             | Additional OTLP headers. Useful for authentication. e.g., "api-key=key,other-config-value=value"   |
+| `OTEL_RESOURCE_ATTRIBUTES`            | No       | -             | Additional resource attributes for traces and metrics. e.g., "environment=production,team=backend" |
+| `FEATURE_TRACE`                       | No       | `true`        | Enable trace feature.                                                                              |
+| `FEATURE_METRICS`                     | No       | `true`        | Enable Metrics feature.                                                                            |
+| `OTEL_LOG_LEVEL`                      | No       | `info`        | Log level.                                                                                         |
 
 ### Getting Started
 

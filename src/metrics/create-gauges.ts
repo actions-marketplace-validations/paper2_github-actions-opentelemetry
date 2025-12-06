@@ -2,8 +2,8 @@ import * as opentelemetry from '@opentelemetry/api'
 import {
   getLatestCompletedAt,
   WorkflowRun,
-  WorkflowRunJob,
-  WorkflowRunJobs
+  WorkflowJob,
+  WorkflowJobs
 } from '../github/index.js'
 import { calcDiffSec } from '../utils/calc-diff-sec.js'
 import { descriptorNames as dn, attributeKeys as ak } from './constants.js'
@@ -23,9 +23,9 @@ export const createGauge = (
 
 const createMetricsAttributes = (
   workflow: WorkflowRun,
-  job?: WorkflowRunJob
+  job?: WorkflowJob
 ): opentelemetry.Attributes => ({
-  [ak.WORKFLOW_NAME]: workflow.name || undefined,
+  [ak.WORKFLOW_NAME]: workflow.name,
   [ak.REPOSITORY]: workflow.repository.full_name,
   ...(job && { [ak.JOB_NAME]: job.name }),
   ...(job && job.conclusion && { [ak.JOB_CONCLUSION]: job.conclusion }) // conclusion specification: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/about-status-checks#check-statuses-and-conclusions
@@ -33,13 +33,14 @@ const createMetricsAttributes = (
 
 export const createWorkflowGauges = (
   workflow: WorkflowRun,
-  workflowRunJobs: WorkflowRunJobs
+  workflowRunJobs: WorkflowJobs
 ): void => {
   const workflowMetricsAttributes = createMetricsAttributes(workflow)
-  const jobCompletedAtMax = new Date(getLatestCompletedAt(workflowRunJobs))
+  // workflow run context has no end time, so use the latest job's completed_at
+  const jobCompletedAtMax = getLatestCompletedAt(workflowRunJobs)
   createGauge(
     dn.WORKFLOW_DURATION,
-    calcDiffSec(new Date(workflow.created_at), jobCompletedAtMax),
+    calcDiffSec(workflow.created_at, jobCompletedAtMax),
     workflowMetricsAttributes,
     { unit: 's' }
   )
@@ -47,17 +48,13 @@ export const createWorkflowGauges = (
 
 export const createJobGauges = (
   workflow: WorkflowRun,
-  workflowRunJobs: WorkflowRunJobs
+  workflowRunJobs: WorkflowJobs
 ): void => {
   for (const job of workflowRunJobs) {
-    if (!job.completed_at) {
-      continue
-    }
-
     const jobMetricsAttributes = createMetricsAttributes(workflow, job)
     createGauge(
       dn.JOB_DURATION,
-      calcDiffSec(new Date(job.started_at), new Date(job.completed_at)),
+      calcDiffSec(job.started_at, job.completed_at),
       jobMetricsAttributes,
       { unit: 's' }
     )
@@ -65,10 +62,7 @@ export const createJobGauges = (
     // The calculation method for GitHub's queue times has not been disclosed.
     // Since it is displayed in the job column, it is assumed to be calculated based on job information.
     // See. https://docs.github.com/en/actions/administering-github-actions/viewing-github-actions-metrics
-    const jobQueuedDuration = calcDiffSec(
-      new Date(job.created_at),
-      new Date(job.started_at)
-    )
+    const jobQueuedDuration = calcDiffSec(job.created_at, job.started_at)
     if (jobQueuedDuration < 0) {
       core.notice(
         `${job.name}: Skip to create ${dn.JOB_QUEUED_DURATION} metrics. This is a GitHub specification issue that occasionally occurs, so it can't be recover.`
